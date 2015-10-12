@@ -1,0 +1,5 @@
+python-ironic-lib (0.3.0-1) unstable; urgency=medium
+
+  * Initial release. (Closes: #801583)
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 12 Oct 2015 10:53:40 +0200
