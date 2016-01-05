@@ -1,4 +1,4 @@
-python-ironic-lib (0.3.0-1) unstable; urgency=medium
+python-ironic-lib (0.3.0-1) experimental; urgency=medium
 
   * Initial release. (Closes: #801583)
 
