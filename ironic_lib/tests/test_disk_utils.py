@@ -58,7 +58,7 @@ BYT;
             'parted', '-s', '-m', '/dev/fake', 'unit', 'MiB', 'print',
             use_standard_locale=True, run_as_root=True)
 
-    @mock.patch.object(disk_utils.LOG, 'warn')
+    @mock.patch.object(disk_utils.LOG, 'warning')
     def test_incorrect(self, log_mock, execute_mock):
         output = """
 BYT;
@@ -225,8 +225,8 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
             expected_mkpart.extend(['set', '2', 'boot', 'on'])
         self.dev = 'fake-dev'
         parted_cmd = self._get_parted_cmd(self.dev) + expected_mkpart
-        parted_call = mock.call(*parted_cmd, run_as_root=True,
-                                check_exit_code=[0])
+        parted_call = mock.call(*parted_cmd, use_standard_locale=True,
+                                run_as_root=True, check_exit_code=[0])
         fuser_cmd = ['fuser', 'fake-dev']
         fuser_call = mock.call(*fuser_cmd, run_as_root=True,
                                check_exit_code=[0, 1])
@@ -250,7 +250,8 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
                                    self.ephemeral_mb, self.configdrive_mb,
                                    self.node_uuid)
 
-        parted_call = mock.call(*cmd, run_as_root=True, check_exit_code=[0])
+        parted_call = mock.call(*cmd, use_standard_locale=True,
+                                run_as_root=True, check_exit_code=[0])
         mock_exc.assert_has_calls([parted_call])
 
     def test_make_partitions_with_local_device(self, mock_exc):
@@ -268,7 +269,8 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
             self.dev, self.root_mb, self.swap_mb, self.ephemeral_mb,
             self.configdrive_mb, self.node_uuid)
 
-        parted_call = mock.call(*cmd, run_as_root=True, check_exit_code=[0])
+        parted_call = mock.call(*cmd, use_standard_locale=True,
+                                run_as_root=True, check_exit_code=[0])
         mock_exc.assert_has_calls([parted_call])
         self.assertEqual(expected_result, result)
 
@@ -447,8 +449,11 @@ class GetConfigdriveTestCase(test_base.BaseTestCase):
     @mock.patch.object(gzip, 'GzipFile')
     def test_get_configdrive(self, mock_gzip, mock_requests, mock_copy):
         mock_requests.return_value = mock.MagicMock(content='Zm9vYmFy')
-        disk_utils._get_configdrive('http://1.2.3.4/cd',
-                                    'fake-node-uuid')
+        tempdir = tempfile.mkdtemp()
+        (size, path) = disk_utils._get_configdrive('http://1.2.3.4/cd',
+                                                   'fake-node-uuid',
+                                                   tempdir=tempdir)
+        self.assertTrue(path.startswith(tempdir))
         mock_requests.assert_called_once_with('http://1.2.3.4/cd')
         mock_gzip.assert_called_once_with('configdrive', 'rb',
                                           fileobj=mock.ANY)
