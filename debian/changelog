@@ -1,6 +1,7 @@
 python-ironic-lib (0.5.0-1) experimental; urgency=medium
 
   * New upstream release.
+  * Fixed (build-)depends for this release.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 21 Jan 2016 10:16:56 +0000
 
