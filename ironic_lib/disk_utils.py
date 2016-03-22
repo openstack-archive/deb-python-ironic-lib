@@ -29,9 +29,8 @@ import time
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_utils import excutils
+from oslo_utils import imageutils
 from oslo_utils import units
-
-from ironic_lib.openstack.common import imageutils
 
 from ironic_lib.common.i18n import _
 from ironic_lib.common.i18n import _LE
@@ -121,9 +120,17 @@ def get_disk_identifier(dev):
     return disk_identifier[0]
 
 
+def is_iscsi_device(dev, node_uuid):
+    """check whether the device path belongs to an iscsi device. """
+
+    iscsi_id = "iqn.2008-10.org.openstack:%s" % node_uuid
+    return iscsi_id in dev
+
+
 def make_partitions(dev, root_mb, swap_mb, ephemeral_mb,
                     configdrive_mb, node_uuid, commit=True,
-                    boot_option="netboot", boot_mode="bios"):
+                    boot_option="netboot", boot_mode="bios",
+                    disk_label=None):
     """Partition the disk device.
 
     Create partitions for root, swap, ephemeral and configdrive on a
@@ -141,6 +148,9 @@ def make_partitions(dev, root_mb, swap_mb, ephemeral_mb,
     :param boot_option: Can be "local" or "netboot". "netboot" by default.
     :param boot_mode: Can be "bios" or "uefi". "bios" by default.
     :param node_uuid: Node's uuid. Used for logging.
+    :param disk_label: The disk label to be used when creating the
+        partition table. Valid values are: "msdos", "gpt" or None; If None
+        Ironic will figure it out according to the boot_mode parameter.
     :returns: A dictionary containing the partition type as Key and partition
         path as Value for the partitions created by this method.
 
@@ -148,19 +158,30 @@ def make_partitions(dev, root_mb, swap_mb, ephemeral_mb,
     LOG.debug("Starting to partition the disk device: %(dev)s "
               "for node %(node)s",
               {'dev': dev, 'node': node_uuid})
-    part_template = dev + '-part%d'
+    # the actual device names in the baremetal are like /dev/sda, /dev/sdb etc.
+    # While for the iSCSI device, the naming convention has a format which has
+    # iqn also embedded in it.
+    # When this function is called by ironic-conductor, the iSCSI device name
+    # should be appended by "part%d". While on the baremetal, it should name
+    # the device partitions as /dev/sda1 and not /dev/sda-part1.
+    if is_iscsi_device(dev, node_uuid):
+        part_template = dev + '-part%d'
+    else:
+        part_template = dev + '%d'
     part_dict = {}
+
+    if disk_label is None:
+        disk_label = 'gpt' if boot_mode == 'uefi' else 'msdos'
+
+    dp = disk_partitioner.DiskPartitioner(dev, disk_label=disk_label)
 
     # For uefi localboot, switch partition table to gpt and create the efi
     # system partition as the first partition.
     if boot_mode == "uefi" and boot_option == "local":
-        dp = disk_partitioner.DiskPartitioner(dev, disk_label="gpt")
         part_num = dp.add_partition(CONF.disk_utils.efi_system_partition_size,
                                     fs_type='fat32',
                                     bootable=True)
         part_dict['efi system partition'] = part_template % part_num
-    else:
-        dp = disk_partitioner.DiskPartitioner(dev)
 
     if ephemeral_mb:
         LOG.debug("Add ephemeral partition (%(size)d MB) to device: %(dev)s "
@@ -395,7 +416,7 @@ def _get_configdrive(configdrive, node_uuid, tempdir=None):
 def work_on_disk(dev, root_mb, swap_mb, ephemeral_mb, ephemeral_format,
                  image_path, node_uuid, preserve_ephemeral=False,
                  configdrive=None, boot_option="netboot", boot_mode="bios",
-                 tempdir=None):
+                 tempdir=None, disk_label=None):
     """Create partitions and copy an image to the root partition.
 
     :param dev: Path for the device to work on.
@@ -415,6 +436,9 @@ def work_on_disk(dev, root_mb, swap_mb, ephemeral_mb, ephemeral_format,
     :param boot_option: Can be "local" or "netboot". "netboot" by default.
     :param boot_mode: Can be "bios" or "uefi". "bios" by default.
     :param tempdir: A temporary directory
+    :param disk_label: The disk label to be used when creating the
+        partition table. Valid values are: "msdos", "gpt" or None; If None
+        Ironic will figure it out according to the boot_mode parameter.
     :returns: a dictionary containing the following keys:
         'root uuid': UUID of root partition
         'efi system partition uuid': UUID of the uefi system partition
@@ -442,7 +466,8 @@ def work_on_disk(dev, root_mb, swap_mb, ephemeral_mb, ephemeral_format,
                                     configdrive_mb, node_uuid,
                                     commit=commit,
                                     boot_option=boot_option,
-                                    boot_mode=boot_mode)
+                                    boot_mode=boot_mode,
+                                    disk_label=disk_label)
         LOG.info(_LI("Successfully completed the disk device"
                      " %(dev)s partitioning for node %(node)s"),
                  {'dev': dev, "node": node_uuid})

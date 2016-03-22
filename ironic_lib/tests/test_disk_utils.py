@@ -24,6 +24,7 @@ import tempfile
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
+from oslo_utils import imageutils
 from oslotest import base as test_base
 import requests
 
@@ -114,7 +115,8 @@ class WorkOnDiskTestCase(test_base.BaseTestCase):
                                              self.configdrive_mb,
                                              self.node_uuid, commit=True,
                                              boot_option="netboot",
-                                             boot_mode="bios")
+                                             boot_mode="bios",
+                                             disk_label=None)
 
     def test_no_swap_partition(self):
         self.mock_ibd.side_effect = iter([True, False])
@@ -131,7 +133,8 @@ class WorkOnDiskTestCase(test_base.BaseTestCase):
                                              self.configdrive_mb,
                                              self.node_uuid, commit=True,
                                              boot_option="netboot",
-                                             boot_mode="bios")
+                                             boot_mode="bios",
+                                             disk_label=None)
 
     def test_no_ephemeral_partition(self):
         ephemeral_part = '/dev/fake-part1'
@@ -157,7 +160,8 @@ class WorkOnDiskTestCase(test_base.BaseTestCase):
                                              self.configdrive_mb,
                                              self.node_uuid, commit=True,
                                              boot_option="netboot",
-                                             boot_mode="bios")
+                                             boot_mode="bios",
+                                             disk_label=None)
 
     @mock.patch.object(utils, 'unlink_without_raise')
     @mock.patch.object(disk_utils, '_get_configdrive')
@@ -189,8 +193,39 @@ class WorkOnDiskTestCase(test_base.BaseTestCase):
                                              configdrive_mb, self.node_uuid,
                                              commit=True,
                                              boot_option="netboot",
-                                             boot_mode="bios")
+                                             boot_mode="bios",
+                                             disk_label=None)
         mock_unlink.assert_called_once_with('fake-path')
+
+    @mock.patch.object(utils, 'mkfs', lambda *_: None)
+    @mock.patch.object(disk_utils, 'block_uuid', lambda p: 'uuid')
+    @mock.patch.object(disk_utils, 'populate_image', lambda *_: None)
+    def test_gpt_disk_label(self):
+        ephemeral_part = '/dev/fake-part1'
+        swap_part = '/dev/fake-part2'
+        root_part = '/dev/fake-part3'
+        ephemeral_mb = 256
+        ephemeral_format = 'exttest'
+
+        self.mock_mp.return_value = {'ephemeral': ephemeral_part,
+                                     'swap': swap_part,
+                                     'root': root_part}
+        self.mock_ibd.return_value = True
+        calls = [mock.call(root_part),
+                 mock.call(swap_part),
+                 mock.call(ephemeral_part)]
+        disk_utils.work_on_disk(self.dev, self.root_mb,
+                                self.swap_mb, ephemeral_mb, ephemeral_format,
+                                self.image_path, self.node_uuid,
+                                disk_label='gpt')
+        self.assertEqual(self.mock_ibd.call_args_list, calls)
+        self.mock_mp.assert_called_once_with(self.dev, self.root_mb,
+                                             self.swap_mb, ephemeral_mb,
+                                             self.configdrive_mb,
+                                             self.node_uuid, commit=True,
+                                             boot_option="netboot",
+                                             boot_mode="bios",
+                                             disk_label='gpt')
 
 
 @mock.patch.object(utils, 'execute')
@@ -205,26 +240,27 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
         self.configdrive_mb = 0
         self.node_uuid = "12345678-1234-1234-1234-1234567890abcxyz"
 
-    def _get_parted_cmd(self, dev):
+    def _get_parted_cmd(self, dev, label=None):
+        if label is None:
+            label = 'msdos'
+
         return ['parted', '-a', 'optimal', '-s', dev,
-                '--', 'unit', 'MiB', 'mklabel', 'msdos']
+                '--', 'unit', 'MiB', 'mklabel', label]
 
-    def _get_parted_cmd_uefi(self, dev):
-        return ['parted', '-a', 'optimal', '-s',
-                dev, '--', 'unit', 'MiB', 'mklabel', 'gpt']
-
-    def _test_make_partitions(self, mock_exc, boot_option):
+    def _test_make_partitions(self, mock_exc, boot_option, disk_label=None):
         mock_exc.return_value = (None, None)
         disk_utils.make_partitions(self.dev, self.root_mb, self.swap_mb,
                                    self.ephemeral_mb, self.configdrive_mb,
-                                   self.node_uuid, boot_option=boot_option)
+                                   self.node_uuid, boot_option=boot_option,
+                                   disk_label=disk_label)
 
         expected_mkpart = ['mkpart', 'primary', 'linux-swap', '1', '513',
                            'mkpart', 'primary', '', '513', '1537']
         if boot_option == "local":
             expected_mkpart.extend(['set', '2', 'boot', 'on'])
         self.dev = 'fake-dev'
-        parted_cmd = self._get_parted_cmd(self.dev) + expected_mkpart
+        parted_cmd = (self._get_parted_cmd(self.dev, disk_label) +
+                      expected_mkpart)
         parted_call = mock.call(*parted_cmd, use_standard_locale=True,
                                 run_as_root=True, check_exit_code=[0])
         fuser_cmd = ['fuser', 'fake-dev']
@@ -237,6 +273,10 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
 
     def test_make_partitions_local_boot(self, mock_exc):
         self._test_make_partitions(mock_exc, boot_option="local")
+
+    def test_make_partitions_disk_label_gpt(self, mock_exc):
+        self._test_make_partitions(mock_exc, boot_option="netboot",
+                                   disk_label="gpt")
 
     def test_make_partitions_with_ephemeral(self, mock_exc):
         self.ephemeral_mb = 2048
@@ -254,15 +294,40 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
                                 run_as_root=True, check_exit_code=[0])
         mock_exc.assert_has_calls([parted_call])
 
+    def test_make_partitions_with_iscsi_device(self, mock_exc):
+        self.ephemeral_mb = 2048
+        expected_mkpart = ['mkpart', 'primary', '', '1', '2049',
+                           'mkpart', 'primary', 'linux-swap', '2049', '2561',
+                           'mkpart', 'primary', '', '2561', '3585']
+        self.dev = '/dev/iqn.2008-10.org.openstack:%s.fake-9' % self.node_uuid
+        ep = '/dev/iqn.2008-10.org.openstack:%s.fake-9-part1' % self.node_uuid
+        swap = ('/dev/iqn.2008-10.org.openstack:%s.fake-9-part2'
+                % self.node_uuid)
+        root = ('/dev/iqn.2008-10.org.openstack:%s.fake-9-part3'
+                % self.node_uuid)
+        expected_result = {'ephemeral': ep,
+                           'swap': swap,
+                           'root': root}
+        cmd = self._get_parted_cmd(self.dev) + expected_mkpart
+        mock_exc.return_value = (None, None)
+        result = disk_utils.make_partitions(
+            self.dev, self.root_mb, self.swap_mb, self.ephemeral_mb,
+            self.configdrive_mb, self.node_uuid)
+
+        parted_call = mock.call(*cmd, use_standard_locale=True,
+                                run_as_root=True, check_exit_code=[0])
+        mock_exc.assert_has_calls([parted_call])
+        self.assertEqual(expected_result, result)
+
     def test_make_partitions_with_local_device(self, mock_exc):
         self.ephemeral_mb = 2048
         expected_mkpart = ['mkpart', 'primary', '', '1', '2049',
                            'mkpart', 'primary', 'linux-swap', '2049', '2561',
                            'mkpart', 'primary', '', '2561', '3585']
         self.dev = 'fake-dev'
-        expected_result = {'ephemeral': 'fake-dev-part1',
-                           'swap': 'fake-dev-part2',
-                           'root': 'fake-dev-part3'}
+        expected_result = {'ephemeral': 'fake-dev1',
+                           'swap': 'fake-dev2',
+                           'root': 'fake-dev3'}
         cmd = self._get_parted_cmd(self.dev) + expected_mkpart
         mock_exc.return_value = (None, None)
         result = disk_utils.make_partitions(
@@ -518,6 +583,33 @@ class OtherFunctionTestCase(test_base.BaseTestCase):
         self.assertRaises(exception.InstanceDeployFailure,
                           disk_utils.is_block_device, device)
         mock_os.assert_has_calls([mock.call(device)] * 3)
+
+    @mock.patch.object(imageutils, 'QemuImgInfo', autospec=True)
+    @mock.patch.object(os.path, 'exists', return_value=False, autospec=True)
+    def test_qemu_img_info_path_doesnt_exist(self, path_exists_mock,
+                                             qemu_img_info_mock):
+        disk_utils.qemu_img_info('noimg')
+        path_exists_mock.assert_called_once_with('noimg')
+        qemu_img_info_mock.assert_called_once_with()
+
+    @mock.patch.object(utils, 'execute', return_value=('out', 'err'),
+                       autospec=True)
+    @mock.patch.object(imageutils, 'QemuImgInfo', autospec=True)
+    @mock.patch.object(os.path, 'exists', return_value=True, autospec=True)
+    def test_qemu_img_info_path_exists(self, path_exists_mock,
+                                       qemu_img_info_mock, execute_mock):
+        disk_utils.qemu_img_info('img')
+        path_exists_mock.assert_called_once_with('img')
+        execute_mock.assert_called_once_with('env', 'LC_ALL=C', 'LANG=C',
+                                             'qemu-img', 'info', 'img')
+        qemu_img_info_mock.assert_called_once_with('out')
+
+    @mock.patch.object(utils, 'execute', autospec=True)
+    def test_convert_image(self, execute_mock):
+        disk_utils.convert_image('source', 'dest', 'out_format')
+        execute_mock.assert_called_once_with('qemu-img', 'convert', '-O',
+                                             'out_format', 'source', 'dest',
+                                             run_as_root=False)
 
     @mock.patch.object(os.path, 'getsize')
     @mock.patch.object(disk_utils, 'qemu_img_info')
