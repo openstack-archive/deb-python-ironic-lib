@@ -1,6 +1,7 @@
 python-ironic-lib (2.0.0-1) UNRELEASED; urgency=medium
 
   * New upstream release.
+  * d/control: Align (Build-)Depends with upstream.
 
  -- Corey Bryant <corey.bryant@canonical.com>  Mon, 18 Jul 2016 15:07:18 -0400
 
