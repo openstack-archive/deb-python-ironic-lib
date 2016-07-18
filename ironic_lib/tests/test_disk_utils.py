@@ -37,7 +37,7 @@ from ironic_lib import utils
 CONF = cfg.CONF
 
 
-@mock.patch.object(utils, 'execute')
+@mock.patch.object(utils, 'execute', autospec=True)
 class ListPartitionsTestCase(test_base.BaseTestCase):
 
     def test_correct(self, execute_mock):
@@ -60,7 +60,7 @@ BYT;
             'parted', '-s', '-m', '/dev/fake', 'unit', 'MiB', 'print',
             use_standard_locale=True, run_as_root=True)
 
-    @mock.patch.object(disk_utils.LOG, 'warning')
+    @mock.patch.object(disk_utils.LOG, 'warning', autospec=True)
     def test_incorrect(self, log_mock, execute_mock):
         output = """
 BYT;
@@ -164,8 +164,8 @@ class WorkOnDiskTestCase(test_base.BaseTestCase):
                                              boot_mode="bios",
                                              disk_label=None)
 
-    @mock.patch.object(utils, 'unlink_without_raise')
-    @mock.patch.object(disk_utils, '_get_configdrive')
+    @mock.patch.object(utils, 'unlink_without_raise', autospec=True)
+    @mock.patch.object(disk_utils, '_get_configdrive', autospec=True)
     def test_no_configdrive_partition(self, mock_configdrive, mock_unlink):
         mock_configdrive.return_value = (10, 'fake-path')
         swap_part = '/dev/fake-part1'
@@ -229,7 +229,7 @@ class WorkOnDiskTestCase(test_base.BaseTestCase):
                                              disk_label='gpt')
 
 
-@mock.patch.object(utils, 'execute')
+@mock.patch.object(utils, 'execute', autospec=True)
 class MakePartitionsTestCase(test_base.BaseTestCase):
 
     def setUp(self):
@@ -240,6 +240,8 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
         self.ephemeral_mb = 0
         self.configdrive_mb = 0
         self.node_uuid = "12345678-1234-1234-1234-1234567890abcxyz"
+        self.efi_size = CONF.disk_utils.efi_system_partition_size
+        self.bios_size = CONF.disk_utils.bios_boot_partition_size
 
     def _get_parted_cmd(self, dev, label=None):
         if label is None:
@@ -248,17 +250,44 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
         return ['parted', '-a', 'optimal', '-s', dev,
                 '--', 'unit', 'MiB', 'mklabel', label]
 
-    def _test_make_partitions(self, mock_exc, boot_option, disk_label=None):
+    def _test_make_partitions(self, mock_exc, boot_option, boot_mode='bios',
+                              disk_label=None):
         mock_exc.return_value = (None, None)
         disk_utils.make_partitions(self.dev, self.root_mb, self.swap_mb,
                                    self.ephemeral_mb, self.configdrive_mb,
                                    self.node_uuid, boot_option=boot_option,
-                                   disk_label=disk_label)
+                                   boot_mode=boot_mode, disk_label=disk_label)
 
-        expected_mkpart = ['mkpart', 'primary', 'linux-swap', '1', '513',
-                           'mkpart', 'primary', '', '513', '1537']
-        if boot_option == "local":
-            expected_mkpart.extend(['set', '2', 'boot', 'on'])
+        _s = lambda x, sz: x + sz
+
+        if boot_option == "local" and boot_mode == "uefi":
+            add_efi_sz = lambda x: str(_s(x, self.efi_size))
+            expected_mkpart = ['mkpart', 'primary', 'fat32', '1',
+                               add_efi_sz(1),
+                               'set', '1', 'boot', 'on',
+                               'mkpart', 'primary', 'linux-swap',
+                               add_efi_sz(1), add_efi_sz(513), 'mkpart',
+                               'primary', '', add_efi_sz(513),
+                               add_efi_sz(1537)]
+        else:
+            if boot_option == "local":
+                if disk_label == "gpt":
+                    add_bios_sz = lambda x: str(_s(x, self.bios_size))
+                    expected_mkpart = ['mkpart', 'primary', '', '1',
+                                       add_bios_sz(1),
+                                       'set', '1', 'bios_grub', 'on',
+                                       'mkpart', 'primary', 'linux-swap',
+                                       add_bios_sz(1), add_bios_sz(513),
+                                       'mkpart', 'primary', '',
+                                       add_bios_sz(513), add_bios_sz(1537)]
+                else:
+                    expected_mkpart = ['mkpart', 'primary', 'linux-swap', '1',
+                                       '513', 'mkpart', 'primary', '', '513',
+                                       '1537', 'set', '2', 'boot', 'on']
+            else:
+                expected_mkpart = ['mkpart', 'primary', 'linux-swap', '1',
+                                   '513', 'mkpart', 'primary', '', '513',
+                                   '1537']
         self.dev = 'fake-dev'
         parted_cmd = (self._get_parted_cmd(self.dev, disk_label) +
                       expected_mkpart)
@@ -274,6 +303,14 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
 
     def test_make_partitions_local_boot(self, mock_exc):
         self._test_make_partitions(mock_exc, boot_option="local")
+
+    def test_make_partitions_local_boot_uefi(self, mock_exc):
+        self._test_make_partitions(mock_exc, boot_option="local",
+                                   boot_mode="uefi", disk_label="gpt")
+
+    def test_make_partitions_local_boot_gpt_bios(self, mock_exc):
+        self._test_make_partitions(mock_exc, boot_option="local",
+                                   disk_label="gpt")
 
     def test_make_partitions_disk_label_gpt(self, mock_exc):
         self._test_make_partitions(mock_exc, boot_option="netboot",
@@ -341,7 +378,7 @@ class MakePartitionsTestCase(test_base.BaseTestCase):
         self.assertEqual(expected_result, result)
 
 
-@mock.patch.object(utils, 'execute')
+@mock.patch.object(utils, 'execute', autospec=True)
 class DestroyMetaDataTestCase(test_base.BaseTestCase):
 
     def setUp(self):
@@ -350,9 +387,8 @@ class DestroyMetaDataTestCase(test_base.BaseTestCase):
         self.node_uuid = "12345678-1234-1234-1234-1234567890abcxyz"
 
     def test_destroy_disk_metadata(self, mock_exec):
-        expected_calls = [mock.call('wipefs', '--all', 'fake-dev',
+        expected_calls = [mock.call('wipefs', '--force', '--all', 'fake-dev',
                                     run_as_root=True,
-                                    check_exit_code=[0],
                                     use_standard_locale=True)]
         disk_utils.destroy_disk_metadata(self.dev, self.node_uuid)
         mock_exec.assert_has_calls(expected_calls)
@@ -360,9 +396,8 @@ class DestroyMetaDataTestCase(test_base.BaseTestCase):
     def test_destroy_disk_metadata_wipefs_fail(self, mock_exec):
         mock_exec.side_effect = processutils.ProcessExecutionError
 
-        expected_call = [mock.call('wipefs', '--all', 'fake-dev',
+        expected_call = [mock.call('wipefs', '--force', '--all', 'fake-dev',
                                    run_as_root=True,
-                                   check_exit_code=[0],
                                    use_standard_locale=True)]
         self.assertRaises(processutils.ProcessExecutionError,
                           disk_utils.destroy_disk_metadata,
@@ -370,8 +405,22 @@ class DestroyMetaDataTestCase(test_base.BaseTestCase):
                           self.node_uuid)
         mock_exec.assert_has_calls(expected_call)
 
+    def test_destroy_disk_metadata_wipefs_not_support_force(self, mock_exec):
+        mock_exec.side_effect = iter(
+            [processutils.ProcessExecutionError(description='--force'),
+             (None, None)])
 
-@mock.patch.object(utils, 'execute')
+        expected_call = [mock.call('wipefs', '--force', '--all', 'fake-dev',
+                                   run_as_root=True,
+                                   use_standard_locale=True),
+                         mock.call('wipefs', '--all', 'fake-dev',
+                                   run_as_root=True,
+                                   use_standard_locale=True)]
+        disk_utils.destroy_disk_metadata(self.dev, self.node_uuid)
+        mock_exec.assert_has_calls(expected_call)
+
+
+@mock.patch.object(utils, 'execute', autospec=True)
 class GetDeviceBlockSizeTestCase(test_base.BaseTestCase):
 
     def setUp(self):
@@ -387,9 +436,9 @@ class GetDeviceBlockSizeTestCase(test_base.BaseTestCase):
         mock_exec.assert_has_calls(expected_call)
 
 
-@mock.patch.object(disk_utils, 'dd')
-@mock.patch.object(disk_utils, 'qemu_img_info')
-@mock.patch.object(disk_utils, 'convert_image')
+@mock.patch.object(disk_utils, 'dd', autospec=True)
+@mock.patch.object(disk_utils, 'qemu_img_info', autospec=True)
+@mock.patch.object(disk_utils, 'convert_image', autospec=True)
 class PopulateImageTestCase(test_base.BaseTestCase):
 
     def setUp(self):
@@ -493,11 +542,11 @@ class RealFilePartitioningTestCase(test_base.BaseTestCase):
         self.assertIn(sizes[2], (9, 10))
 
 
-@mock.patch.object(shutil, 'copyfileobj')
-@mock.patch.object(requests, 'get')
+@mock.patch.object(shutil, 'copyfileobj', autospec=True)
+@mock.patch.object(requests, 'get', autospec=True)
 class GetConfigdriveTestCase(test_base.BaseTestCase):
 
-    @mock.patch.object(gzip, 'GzipFile')
+    @mock.patch.object(gzip, 'GzipFile', autospec=True)
     def test_get_configdrive(self, mock_gzip, mock_requests, mock_copy):
         mock_requests.return_value = mock.MagicMock(content='Zm9vYmFy')
         tempdir = tempfile.mkdtemp()
@@ -510,7 +559,7 @@ class GetConfigdriveTestCase(test_base.BaseTestCase):
                                           fileobj=mock.ANY)
         mock_copy.assert_called_once_with(mock.ANY, mock.ANY)
 
-    @mock.patch.object(gzip, 'GzipFile')
+    @mock.patch.object(gzip, 'GzipFile', autospec=True)
     def test_get_configdrive_base64_string(self, mock_gzip, mock_requests,
                                            mock_copy):
         disk_utils._get_configdrive('Zm9vYmFy', 'fake-node-uuid')
@@ -526,7 +575,7 @@ class GetConfigdriveTestCase(test_base.BaseTestCase):
                           'http://1.2.3.4/cd', 'fake-node-uuid')
         self.assertFalse(mock_copy.called)
 
-    @mock.patch.object(base64, 'b64decode')
+    @mock.patch.object(base64, 'b64decode', autospec=True)
     def test_get_configdrive_base64_error(self, mock_b64, mock_requests,
                                           mock_copy):
         mock_b64.side_effect = TypeError
@@ -536,7 +585,7 @@ class GetConfigdriveTestCase(test_base.BaseTestCase):
         mock_b64.assert_called_once_with('malformed')
         self.assertFalse(mock_copy.called)
 
-    @mock.patch.object(gzip, 'GzipFile')
+    @mock.patch.object(gzip, 'GzipFile', autospec=True)
     def test_get_configdrive_gzip_error(self, mock_gzip, mock_requests,
                                         mock_copy):
         mock_requests.return_value = mock.MagicMock(content='Zm9vYmFy')
@@ -553,8 +602,8 @@ class GetConfigdriveTestCase(test_base.BaseTestCase):
 @mock.patch('time.sleep', lambda sec: None)
 class OtherFunctionTestCase(test_base.BaseTestCase):
 
-    @mock.patch.object(os, 'stat')
-    @mock.patch.object(stat, 'S_ISBLK')
+    @mock.patch.object(os, 'stat', autospec=True)
+    @mock.patch.object(stat, 'S_ISBLK', autospec=True)
     def test_is_block_device_works(self, mock_is_blk, mock_os):
         device = '/dev/disk/by-path/ip-1.2.3.4:5678-iscsi-iqn.fake-lun-9'
         mock_is_blk.return_value = True
@@ -562,7 +611,7 @@ class OtherFunctionTestCase(test_base.BaseTestCase):
         self.assertTrue(disk_utils.is_block_device(device))
         mock_is_blk.assert_called_once_with(mock_os().st_mode)
 
-    @mock.patch.object(os, 'stat')
+    @mock.patch.object(os, 'stat', autospec=True)
     def test_is_block_device_raises(self, mock_os):
         device = '/dev/disk/by-path/ip-1.2.3.4:5678-iscsi-iqn.fake-lun-9'
         mock_os.side_effect = OSError
@@ -597,8 +646,8 @@ class OtherFunctionTestCase(test_base.BaseTestCase):
                                              'out_format', 'source', 'dest',
                                              run_as_root=False)
 
-    @mock.patch.object(os.path, 'getsize')
-    @mock.patch.object(disk_utils, 'qemu_img_info')
+    @mock.patch.object(os.path, 'getsize', autospec=True)
+    @mock.patch.object(disk_utils, 'qemu_img_info', autospec=True)
     def test_get_image_mb(self, mock_qinfo, mock_getsize):
         mb = 1024 * 1024
 
