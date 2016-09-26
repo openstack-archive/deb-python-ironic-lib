@@ -47,8 +47,8 @@ Build-Depends-Indep: python-coverage,
                      subunit,
                      testrepository,
 Standards-Version: 3.9.8
-Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-python-ironic-lib
-Vcs-Git: https://git.openstack.org/openstack/deb-python-ironic-lib
+Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-python-ironic-lib?h=debian%2Fnewton
+Vcs-Git: https://git.openstack.org/openstack/deb-python-ironic-lib -b debian/newton
 Homepage: http://www.openstack.org/
 
 Package: python-ironic-lib
